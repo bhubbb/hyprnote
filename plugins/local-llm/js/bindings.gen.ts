@@ -27,6 +27,15 @@ async stopServer() : Promise<null> {
 },
 async listOllamaModels() : Promise<string[]> {
     return await TAURI_INVOKE("plugin:local-llm|list_ollama_models");
+},
+async listSupportedModels() : Promise<SupportedModel[]> {
+    return await TAURI_INVOKE("plugin:local-llm|list_supported_models");
+},
+async getCurrentModel() : Promise<SupportedModel> {
+    return await TAURI_INVOKE("plugin:local-llm|get_current_model");
+},
+async setCurrentModel(model: SupportedModel) : Promise<null> {
+    return await TAURI_INVOKE("plugin:local-llm|set_current_model", { model });
 }
 }
 
@@ -39,6 +48,11 @@ async listOllamaModels() : Promise<string[]> {
 
 
 /** user-defined types **/
+
+export enum SupportedModel {
+  Qwen3_8b_Thinking = "Qwen3_8b_Thinking",
+  Llama3p2_3bQ4 = "Llama3p2_3bQ4",
+}
 
 export type TAURI_CHANNEL<TSend> = null
 

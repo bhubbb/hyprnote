@@ -73,7 +73,7 @@ impl Llama {
                                     // https://github.com/ggml-org/llama.cpp/blob/492d7f1/src/llama-context.cpp#L2261
                                     LlamaContextParams::default()
                                         .with_n_ctx(std::num::NonZeroU32::new(
-                                            DEFAULT_MAX_INPUT_TOKENS + DEFAULT_MAX_OUTPUT_TOKENS,
+                                            request.num_ctx.max(DEFAULT_MAX_INPUT_TOKENS + DEFAULT_MAX_OUTPUT_TOKENS),
                                         ))
                                         .with_n_batch(DEFAULT_MAX_INPUT_TOKENS)
                                         .with_n_ubatch(512)
@@ -103,14 +103,18 @@ impl Llama {
                             let mut sampler = match request.grammar {
                                 Some(grammar) => LlamaSampler::chain_simple([
                                     LlamaSampler::grammar(&model, grammar.as_str(), "root"),
-                                    LlamaSampler::temp(0.8),
-                                    LlamaSampler::penalties(0, 1.4, 0.1, 0.0),
-                                    LlamaSampler::mirostat_v2(1234, 3.0, 0.2),
+                                    LlamaSampler::temp(request.temperature),
+                                    LlamaSampler::top_k(request.top_k),
+                                    LlamaSampler::top_p(request.top_p, 1),
+                                    LlamaSampler::min_p(request.min_p, 1),
+                                    LlamaSampler::penalties(0, request.repeat_penalty, 0.1, 0.0),
                                 ]),
                                 None => LlamaSampler::chain_simple([
-                                    LlamaSampler::temp(0.8),
-                                    LlamaSampler::penalties(0, 1.4, 0.1, 0.0),
-                                    LlamaSampler::mirostat_v2(1234, 3.0, 0.2),
+                                    LlamaSampler::temp(request.temperature),
+                                    LlamaSampler::top_k(request.top_k),
+                                    LlamaSampler::top_p(request.top_p, 1),
+                                    LlamaSampler::min_p(request.min_p, 1),
+                                    LlamaSampler::penalties(0, request.repeat_penalty, 0.1, 0.0),
                                 ]),
                             };
                             while n_cur <= last_index + DEFAULT_MAX_OUTPUT_TOKENS as i32 {
