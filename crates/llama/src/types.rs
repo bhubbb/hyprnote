@@ -40,8 +40,30 @@ impl FromOpenAI for LlamaChatMessage {
     }
 }
 
-#[derive(Default)]
 pub struct LlamaRequest {
     pub grammar: Option<String>,
     pub messages: Vec<LlamaChatMessage>,
+    pub temperature: f32,
+    pub top_k: i32,
+    pub top_p: f32,
+    pub min_p: f32,
+    pub num_ctx: u32,
+    pub repeat_penalty: f32,
+    pub model_name: Option<String>,
+}
+
+impl Default for LlamaRequest {
+    fn default() -> Self {
+        Self {
+            grammar: None,
+            messages: Vec::new(),
+            temperature: 0.8,   // Default value
+            top_k: 40,          // Default value
+            top_p: 0.9,         // Default value
+            min_p: 0.05,        // Default value
+            num_ctx: 4096,      // Default value
+            repeat_penalty: 1.1, // Default value
+            model_name: None,
+        }
+    }
 }

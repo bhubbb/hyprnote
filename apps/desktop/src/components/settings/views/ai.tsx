@@ -1,13 +1,15 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Trans } from "@lingui/react/macro";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BrainIcon, DownloadIcon, HardDriveIcon, MicIcon, SparklesIcon, Zap as SpeedIcon } from "lucide-react";
-import { useEffect } from "react";
+import { AlertCircleIcon, BrainIcon, CheckCircleIcon, DownloadIcon, HardDriveIcon, InfoIcon, MicIcon, SparklesIcon, Zap as SpeedIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { commands as connectorCommands, type Connection } from "@hypr/plugin-connector";
-import { commands as localSttCommands, SupportedModel } from "@hypr/plugin-local-stt";
+import { commands as localLlmCommands, SupportedModel } from "@hypr/plugin-local-llm";
+import { commands as localSttCommands, SupportedModel as SttSupportedModel } from "@hypr/plugin-local-stt";
+import { Badge } from "@hypr/ui/components/ui/badge";
 import { Button } from "@hypr/ui/components/ui/button";
 import CursorFollowTooltip from "@hypr/ui/components/ui/cursor-tooltip";
 import {
@@ -22,9 +24,11 @@ import {
 import { Input } from "@hypr/ui/components/ui/input";
 import { Label } from "@hypr/ui/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@hypr/ui/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@hypr/ui/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@hypr/ui/components/ui/tabs";
 import { cn } from "@hypr/ui/lib/utils";
-import { showSttModelDownloadToast } from "../../toast/shared";
+import { showLlmModelDownloadToast, showSttModelDownloadToast } from "../../toast/shared";
+import { toast } from "@hypr/ui/components/ui/toast";
 
 const endpointSchema = z.object({
   model: z.string().min(1),
@@ -46,7 +50,7 @@ const endpointSchema = z.object({
 });
 type FormValues = z.infer<typeof endpointSchema>;
 
-const sttModelMetadata: Record<SupportedModel, {
+const sttModelMetadata: Record<SttSupportedModel, {
   name: string;
   description: string;
   intelligence: number;
@@ -135,6 +139,40 @@ const sttModelMetadata: Record<SupportedModel, {
     huggingface: "https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-large-v3-turbo-q8_0.bin",
   },
 };
+
+const llmModelMetadata: Record<SupportedModel, {
+  name: string;
+  description: string;
+  intelligence: number;
+  speed: number;
+  size: string;
+  capabilities?: string[];
+}> = {
+  "Qwen3_8b_Thinking": {
+    name: "Qwen3 8B UD",
+    description: "A thinking-capable 8B parameter model optimized for context understanding and step-by-step reasoning.",
+    intelligence: 3,
+    speed: 2,
+    size: "~5 GB",
+    capabilities: ["thinking", "code"],
+  },
+  "Llama3p2_3bQ4": {
+    name: "Llama 3.2 3B",
+    description: "A compact 3B parameter model with good performance for general use cases.",
+    intelligence: 2,
+    speed: 3,
+    size: "~2 GB",
+    capabilities: ["code"],
+  },
+};
+
+// Helper function to get a display name for the model
+function getModelDisplayName(modelId: string): string {
+  if (modelId in llmModelMetadata) {
+    return llmModelMetadata[modelId as SupportedModel]?.name || modelId;
+  }
+  return modelId;
+}
 
 const RatingDisplay = (
   { label, rating, maxRating = 3, icon: Icon }: {
@@ -252,7 +290,7 @@ export default function LocalAI() {
   });
 
   const setCurrentSTTModel = useMutation({
-    mutationFn: (model: SupportedModel) => localSttCommands.setCurrentModel(model),
+    mutationFn: (model: SttSupportedModel) => localSttCommands.setCurrentModel(model),
     onSuccess: () => {
       currentSTTModel.refetch();
     },
@@ -265,6 +303,64 @@ export default function LocalAI() {
       const downloadedModels = await Promise.all(models.map((model) => localSttCommands.isModelDownloaded(model)));
       return models.map((model, index) => ({ model, isDownloaded: downloadedModels[index] }));
     },
+  });
+
+  const currentLLMModel = useQuery({
+    queryKey: ["local-llm", "current-model"],
+    queryFn: async () => {
+      try {
+        return await localLlmCommands.getCurrentModel();
+      } catch (error) {
+        // Default to first model if there's an error
+        return "Qwen3_8b_Thinking" as SupportedModel;
+      }
+    },
+  });
+
+  const setCurrentLLMModel = useMutation({
+    mutationFn: (model: SupportedModel) => localLlmCommands.setCurrentModel(model),
+    onSuccess: () => {
+      currentLLMModel.refetch();
+    }
+  });
+
+  const isModelDownloaded = useQuery({
+    queryKey: ["local-llm", "is-model-downloaded"],
+    queryFn: () => localLlmCommands.isModelDownloaded(),
+    refetchInterval: 5000, // Refetch every 5 seconds
+    retry: 3,
+    retryDelay: 1000,
+  });
+
+  const supportedLLMModels = useQuery({
+    queryKey: ["local-llm", "supported-models"],
+    queryFn: async () => {
+      try {
+        // Try to get models from the plugin
+        const models = await localLlmCommands.listSupportedModels();
+        // We'll use isModelDownloaded query for the download status instead of using it here
+        
+        if (Array.isArray(models) && models.length > 0) {
+          // Don't set isDownloaded here, we'll reference the isModelDownloaded query result
+          return models.map((model) => ({ model, isDownloaded: false }));
+        }
+        
+        // Fallback to hardcoded models if plugin fails
+        return [
+          { model: "Qwen3_8b_Thinking" as SupportedModel, isDownloaded: false },
+          { model: "Llama3p2_3bQ4" as SupportedModel, isDownloaded: false }
+        ];
+      } catch (error) {
+        // Return hardcoded models on error
+        return [
+          { model: "Qwen3_8b_Thinking" as SupportedModel, isDownloaded: false },
+          { model: "Llama3p2_3bQ4" as SupportedModel, isDownloaded: false }
+        ];
+      }
+    },
+    refetchInterval: 5000, // Refetch every 5 seconds to detect changes
+    retry: 3,
+    retryDelay: 1000,
   });
 
   const isLocalEndpoint = () => {
@@ -291,7 +387,7 @@ export default function LocalAI() {
           <RadioGroup
             defaultValue={currentSTTModel.data}
             onValueChange={(value) => {
-              setCurrentSTTModel.mutate(value as SupportedModel);
+              setCurrentSTTModel.mutate(value as SttSupportedModel);
             }}
             className="grid grid-cols-1 gap-4"
           >
@@ -394,154 +490,310 @@ export default function LocalAI() {
         </TabsContent>
 
         <TabsContent value="llm" className="mt-4">
-          <RadioGroup
-            value={customLLMEnabled.data ? "custom" : "llama-3.2-3b-q4"}
-            onValueChange={(value) => {
-              setCustomLLMEnabled.mutate(value === "custom");
-            }}
-            className="space-y-4"
-          >
-            <Label
-              htmlFor="default-llm"
-              className={cn(
-                "border rounded-md p-4 transition-all block",
-                !customLLMEnabled.data
-                  ? "ring-1 ring-blue-500 border-blue-500"
-                  : "border-neutral-200 cursor-pointer hover:border-neutral-300",
-              )}
-            >
-              <div className="flex items-start justify-between w-full">
-                <div className="flex items-center space-x-3">
-                  <RadioGroupItem value="llama-3.2-3b-q4" id="default-llm" className="peer sr-only" />
-                  <div className="flex flex-col">
-                    <span className="font-medium">
-                      <Trans>Default (llama-3.2-3b-q4)</Trans>
-                    </span>
-                    <p className="text-xs font-normal text-neutral-500 mt-1">
-                      <Trans>Use the local Llama 3.2 model for enhanced privacy and offline capability.</Trans>
-                    </p>
-                  </div>
-                </div>
-                {/* Right side placeholder - empty for now */}
-              </div>
-            </Label>
-
-            <Label
-              htmlFor="custom-llm"
-              className={cn(
-                "border rounded-md p-4 transition-all block",
-                customLLMEnabled.data
-                  ? "ring-1 ring-blue-500 border-blue-500"
-                  : "border-neutral-200 cursor-pointer hover:border-neutral-300",
-              )}
-            >
-              <div className="flex items-start justify-between w-full">
-                <div className="flex items-center space-x-3">
-                  <RadioGroupItem value="custom" id="custom-llm" className="peer sr-only" />
-                  <div className="flex flex-col">
-                    <span className="font-medium">
-                      <Trans>Custom Endpoint</Trans>
-                    </span>
-                    <p className="text-xs font-normal text-neutral-500 mt-1">
-                      <Trans>Connect to a self-hosted or third-party LLM endpoint (OpenAI API compatible).</Trans>
-                    </p>
-                  </div>
-                </div>
-                {/* Right side placeholder - empty for now */}
-              </div>
-
-              {/* Custom LLM Form Fields - Placed after the main content flex container */}
-              <div
-                className={cn(
-                  "mt-4 pt-4 border-t transition-opacity duration-200",
-                  customLLMEnabled.data ? "opacity-100" : "opacity-50 pointer-events-none",
-                )}
-              >
-                <Form {...form}>
-                  <form className="space-y-4">
-                    <FormField
-                      control={form.control}
-                      name="api_base"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-sm font-medium">
-                            <Trans>API Base URL</Trans>
-                          </FormLabel>
-                          <FormDescription className="text-xs">
-                            <Trans>
-                              Enter the base URL for your custom LLM endpoint (e.g., http://localhost:8080/v1)
-                            </Trans>
-                          </FormDescription>
-                          <FormControl>
-                            <Input
-                              {...field}
-                              placeholder="http://localhost:8080/v1"
-                              disabled={!customLLMEnabled.data}
-                              className="focus-visible:ring-1 focus-visible:ring-offset-0"
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    {!isLocalEndpoint() && (
-                      <FormField
-                        control={form.control}
-                        name="api_key"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-sm font-medium">
-                              <Trans>API Key</Trans>
-                            </FormLabel>
-                            <FormDescription className="text-xs">
-                              <Trans>Enter the API key for your custom LLM endpoint</Trans>
-                            </FormDescription>
-                            <FormControl>
-                              <Input
-                                {...field}
-                                type="password"
-                                placeholder="sk-..."
-                                disabled={!customLLMEnabled.data}
-                                className="focus-visible:ring-1 focus-visible:ring-offset-0"
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <h3 className="text-lg font-medium"><Trans>Local Models</Trans></h3>
+              <p className="text-sm text-neutral-500">
+                <Trans>Choose from available local models for enhanced privacy and offline capability.</Trans>
+              </p>
+              
+              <div className="space-y-4 mt-4">
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-center gap-4">
+                    <Select
+                      value={currentLLMModel.data || "Qwen3_8b_Thinking"}
+                      onValueChange={(value) => {
+                        setCurrentLLMModel.mutate(value as SupportedModel);
+                        // Refresh download status when changing models
+                        isModelDownloaded.refetch();
+                      }}
+                    >
+                      <SelectTrigger className="w-[280px]">
+                        <SelectValue placeholder="Select a model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {supportedLLMModels.data?.map((model) => (
+                          <SelectItem key={model.model} value={model.model}>
+                            {getModelDisplayName(model.model)} 
+                            {!(isModelDownloaded.data && currentLLMModel.data === model.model) && " (Not Downloaded)"}
+                          </SelectItem>
+                        ))}
+                        {!supportedLLMModels.data?.length && (
+                          <SelectItem value="Qwen3_8b_Thinking">Qwen3 8B (Thinking)</SelectItem>
                         )}
-                      />
-                    )}
+                      </SelectContent>
+                    </Select>
 
-                    <FormField
-                      control={form.control}
-                      name="model"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-sm font-medium">
-                            <Trans>Model Name</Trans>
-                          </FormLabel>
-                          <FormDescription className="text-xs">
-                            <Trans>
-                              Enter the exact model name required by your endpoint (if applicable).
-                            </Trans>
-                          </FormDescription>
-                          <FormControl>
-                            <Input
-                              {...field}
-                              placeholder="e.g., QuantizedTiny, llama3"
-                              disabled={!customLLMEnabled.data}
-                              className="focus-visible:ring-1 focus-visible:ring-offset-0"
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </form>
-                </Form>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-1"
+                      onClick={() => {
+                        const modelToDownload = currentLLMModel.data || 
+                          (supportedLLMModels.data?.[0]?.model) || 
+                          "Qwen3_8b_Thinking";
+                        
+                        const onComplete = () => {
+                          // Refresh model state after download completes
+                          supportedLLMModels.refetch();
+                          // Force a refresh of the download status
+                          setTimeout(() => {
+                            isModelDownloaded.refetch();
+                            currentLLMModel.refetch();
+                          }, 500);
+                        };
+                          
+                        showLlmModelDownloadToast(modelToDownload as SupportedModel, onComplete);
+                        
+                        // Also refresh periodically during download
+                        const intervalId = setInterval(() => {
+                          isModelDownloaded.refetch();
+                        }, 5000);
+                        
+                        // Clear interval after 5 minutes
+                        setTimeout(() => clearInterval(intervalId), 300000);
+                      }}
+                    >
+                      <DownloadIcon className="w-4 h-4" />
+                      <Trans>{isModelDownloaded.isLoading ? "Checking..." : "Download Model"}</Trans>
+                    </Button>
+                  </div>
+
+                {supportedLLMModels.data && supportedLLMModels.data.length > 0 && (
+                  <div className="border rounded-md p-4 mt-4">
+                    <h4 className="font-medium text-sm mb-2">Available Models</h4>
+                    <div className="space-y-3">
+                      {supportedLLMModels.data.map((model) => {
+                        const metadata = llmModelMetadata[model.model as SupportedModel];
+                        return (
+                          <div key={model.model} className="flex items-start justify-between">
+                            <div>
+                              <div className="font-medium text-sm">{getModelDisplayName(model.model)}</div>
+                              {metadata?.description && (
+                                <div className="text-xs text-neutral-500">{metadata.description}</div>
+                              )}
+                              {metadata?.capabilities && (
+                                <div className="flex items-center gap-1 mt-1">
+                                  {metadata.capabilities.includes("thinking") && (
+                                    <Badge variant="secondary" className="text-[10px]">Thinking</Badge>
+                                  )}
+                                  {metadata.capabilities.includes("code") && (
+                                    <Badge variant="secondary" className="text-[10px]">Code</Badge>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <SpecDisplay value={metadata?.size || "Unknown"} icon={HardDriveIcon} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                
+                {supportedLLMModels.isLoading && (
+                  <div className="text-sm text-neutral-500 py-2 text-center">
+                    <Trans>Loading available models...</Trans>
+                  </div>
+                )}
               </div>
-            </Label>
-          </RadioGroup>
+              </div>
+              
+              {/* Model download status */}
+              <div className="mt-4 text-sm">
+                {isModelDownloaded.isLoading ? (
+                  <div className="flex items-center text-amber-600">
+                    <div className="animate-spin h-4 w-4 mr-1 border-2 border-amber-600 border-t-transparent rounded-full"></div>
+                    Checking model status...
+                  </div>
+                ) : isModelDownloaded.data ? (
+                  <div className="flex items-center text-green-600">
+                    <CheckCircleIcon className="w-4 h-4 mr-1" /> 
+                    Model downloaded successfully
+                    <Button 
+                      variant="link" 
+                      size="sm"
+                      className="ml-2 h-auto p-0 text-xs underline"
+                      onClick={() => {
+                        // Try to start the server to make sure it works
+                        localLlmCommands.startServer()
+                          .then(() => {
+                            toast({
+                              title: "Server Started",
+                              content: "Model server started successfully.",
+                              dismissible: true,
+                            });
+                          })
+                          .catch(() => {
+                            toast({
+                              title: "Server Error",
+                              content: "Failed to start model server. Try downloading again.",
+                              dismissible: true,
+                            });
+                          });
+                      }}
+                    >
+                      Test
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center text-neutral-500">
+                    <InfoIcon className="w-4 h-4 mr-1" /> 
+                    Click "Download Model" to enable offline capability
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="border-t pt-6 mt-6">
+              <RadioGroup
+                value={customLLMEnabled.data ? "custom" : "local"}
+                onValueChange={(value) => {
+                  setCustomLLMEnabled.mutate(value === "custom");
+                }}
+                className="space-y-4"
+              >
+                <Label
+                  htmlFor="local-llm"
+                  className={cn(
+                    "border rounded-md p-4 transition-all block",
+                    !customLLMEnabled.data
+                      ? "ring-1 ring-blue-500 border-blue-500"
+                      : "border-neutral-200 cursor-pointer hover:border-neutral-300",
+                  )}
+                >
+                  <div className="flex items-start justify-between w-full">
+                    <div className="flex items-center space-x-3">
+                      <RadioGroupItem value="local" id="local-llm" className="peer sr-only" />
+                      <div className="flex flex-col">
+                        <span className="font-medium">
+                          <Trans>Use Local Model</Trans>
+                        </span>
+                        <p className="text-xs font-normal text-neutral-500 mt-1">
+                          <Trans>Use the selected local model for enhanced privacy and offline capability.</Trans>
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </Label>
+
+                <Label
+                  htmlFor="custom-llm"
+                  className={cn(
+                    "border rounded-md p-4 transition-all block",
+                    customLLMEnabled.data
+                      ? "ring-1 ring-blue-500 border-blue-500"
+                      : "border-neutral-200 cursor-pointer hover:border-neutral-300",
+                  )}
+                >
+                  <div className="flex items-start justify-between w-full">
+                    <div className="flex items-center space-x-3">
+                      <RadioGroupItem value="custom" id="custom-llm" className="peer sr-only" />
+                      <div className="flex flex-col">
+                        <span className="font-medium">
+                          <Trans>Custom Endpoint</Trans>
+                        </span>
+                        <p className="text-xs font-normal text-neutral-500 mt-1">
+                          <Trans>Connect to a self-hosted or third-party LLM endpoint (OpenAI API compatible).</Trans>
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Custom LLM Form Fields - Placed after the main content flex container */}
+                  <div
+                    className={cn(
+                      "mt-4 pt-4 border-t transition-opacity duration-200",
+                      customLLMEnabled.data ? "opacity-100" : "opacity-50 pointer-events-none",
+                    )}
+                  >
+                    <Form {...form}>
+                      <form className="space-y-4">
+                        <FormField
+                          control={form.control}
+                          name="api_base"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel className="text-sm font-medium">
+                                <Trans>API Base URL</Trans>
+                              </FormLabel>
+                              <FormDescription className="text-xs">
+                                <Trans>
+                                  Enter the base URL for your custom LLM endpoint (e.g., http://localhost:8080/v1)
+                                </Trans>
+                              </FormDescription>
+                              <FormControl>
+                                <Input
+                                  {...field}
+                                  placeholder="http://localhost:8080/v1"
+                                  disabled={!customLLMEnabled.data}
+                                  className="focus-visible:ring-1 focus-visible:ring-offset-0"
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+
+                        {!isLocalEndpoint() && (
+                          <FormField
+                            control={form.control}
+                            name="api_key"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel className="text-sm font-medium">
+                                  <Trans>API Key</Trans>
+                                </FormLabel>
+                                <FormDescription className="text-xs">
+                                  <Trans>Enter the API key for your custom LLM endpoint</Trans>
+                                </FormDescription>
+                                <FormControl>
+                                  <Input
+                                    {...field}
+                                    type="password"
+                                    placeholder="sk-..."
+                                    disabled={!customLLMEnabled.data}
+                                    className="focus-visible:ring-1 focus-visible:ring-offset-0"
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        )}
+
+                        <FormField
+                          control={form.control}
+                          name="model"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel className="text-sm font-medium">
+                                <Trans>Model Name</Trans>
+                              </FormLabel>
+                              <FormDescription className="text-xs">
+                                <Trans>
+                                  Enter the exact model name required by your endpoint (if applicable).
+                                </Trans>
+                              </FormDescription>
+                              <FormControl>
+                                <Input
+                                  {...field}
+                                  placeholder="e.g., QuantizedTiny, llama3"
+                                  disabled={!customLLMEnabled.data}
+                                  className="focus-visible:ring-1 focus-visible:ring-offset-0"
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </form>
+                    </Form>
+                  </div>
+                </Label>
+              </RadioGroup>
+            </div>
+          </div>
         </TabsContent>
       </Tabs>
     </div>
